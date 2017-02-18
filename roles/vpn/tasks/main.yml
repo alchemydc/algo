@@ -259,6 +259,30 @@
     - "{{ PayloadContent.results }}"
   no_log: True
 
+- name: Build the AON_BOTH mobileconfigs
+  local_action:
+    module: template
+    src: mobileconfig_AON_BOTH.j2
+    dest: configs/{{ IP_subject_alt_name }}/{{ item.0 }}_AON_BOTH.mobileconfig
+    mode: 0600
+  become: no
+  with_together:
+    - "{{ users }}"
+    - "{{ PayloadContent.results }}"
+  no_log: True
+
+- name: Build the AON_WIFI mobileconfigs
+  local_action:
+    module: template
+    src: mobileconfig_AON_WIFI.j2
+    dest: configs/{{ IP_subject_alt_name }}/{{ item.0 }}_AON_WIFI.mobileconfig
+    mode: 0600
+  become: no
+  with_together:
+    - "{{ users }}"
+    - "{{ PayloadContent.results }}"
+  no_log: True
+
 - name: Build the strongswan app android config
   local_action:
     module: template
