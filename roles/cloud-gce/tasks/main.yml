@@ -1,40 +1,84 @@
-- set_fact:
-    credentials_file_lookup: "{{ lookup('file', '{{ credentials_file }}') }}"
-    ssh_public_key_lookup: "{{ lookup('file', '{{ SSH_keys.public }}') }}"
+---
+- name: Build python virtual environment
+  import_tasks: venv.yml
 
-- name: "Creating a new instance..."
-  gce:
-    instance_names: "{{ server_name }}"
-    zone: "{{ zone }}"
-    machine_type: f1-micro
-    image: ubuntu-1604
-    service_account_email: "{{ credentials_file_lookup.client_email  }}"
-    credentials_file: "{{ credentials_file  }}"
-    project_id: "{{ credentials_file_lookup.project_id  }}"
-    metadata: '{"sshKeys":"root:{{ ssh_public_key_lookup }}"}'
-  register: google_vm
+- name: Include prompts
+  import_tasks: prompts.yml
 
-- name: Add the instance to an inventory group
-  add_host:
-    name: "{{ google_vm.instance_data[0].public_ip }}"
-    groups: vpn-host
-    ansible_ssh_user: ubuntu
-    ansible_python_interpreter: "/usr/bin/python2.7"
-    ansible_ssh_private_key_file: "{{ SSH_keys.private }}"
-    cloud_provider: gce
-    ipv6_support: no
+- name: Network configured
+  gcp_compute_network:
+    auth_kind: serviceaccount
+    service_account_file: "{{ credentials_file_path }}"
+    project: "{{ project_id }}"
+    name: algovpn
+    auto_create_subnetworks: true
+    routing_config:
+      routing_mode: REGIONAL
+  register: gcp_compute_network
 
 - name: Firewall configured
-  local_action:
-    module: gce_net
-    name: "{{ google_vm.instance_data[0].network }}"
-    fwname: "algo-ikev2"
-    allowed: "udp:500,4500;tcp:22"
-    state: "present"
-    src_range: 0.0.0.0/0
-    service_account_email: "{{ credentials_file_lookup.client_email }}"
-    credentials_file: "{{ credentials_file  }}"
-    project_id: "{{ credentials_file_lookup.project_id }}"
+  gcp_compute_firewall:
+    auth_kind: serviceaccount
+    service_account_file: "{{ credentials_file_path }}"
+    project: "{{ project_id }}"
+    name: algovpn
+    network: "{{ gcp_compute_network }}"
+    direction: INGRESS
+    allowed:
+      - ip_protocol: udp
+        ports:
+          - '500'
+          - '4500'
+          - '{{ wireguard_port|string }}'
+      - ip_protocol: tcp
+        ports:
+          - '{{ ssh_port }}'
+      - ip_protocol: icmp
+
+- block:
+  - name: External IP allocated
+    gcp_compute_address:
+      auth_kind: serviceaccount
+      service_account_file: "{{ credentials_file_path }}"
+      project: "{{ project_id }}"
+      name: "{{ algo_server_name }}"
+      region: "{{ algo_region }}"
+    register: gcp_compute_address
+
+  - name: Set External IP as a fact
+    set_fact:
+      external_ip: "{{ gcp_compute_address.address }}"
+  when: cloud_providers.gce.external_static_ip
+
+- name: Instance created
+  gcp_compute_instance:
+    auth_kind: serviceaccount
+    service_account_file: "{{ credentials_file_path }}"
+    project: "{{ project_id }}"
+    name: "{{ algo_server_name }}"
+    zone: "{{ algo_zone }}"
+    machine_type: "{{ cloud_providers.gce.size }}"
+    disks:
+      - auto_delete: true
+        boot: true
+        initialize_params:
+          source_image: "projects/ubuntu-os-cloud/global/images/family/{{ cloud_providers.gce.image }}"
+    metadata:
+      ssh-keys: "algo:{{ ssh_public_key_lookup }}"
+      user-data: "{{ lookup('template', 'files/cloud-init/base.yml') }}"
+    network_interfaces:
+      - network: "{{ gcp_compute_network }}"
+        access_configs:
+          - name: "{{ algo_server_name }}"
+            nat_ip: "{{ gcp_compute_address|default(None) }}"
+            type: ONE_TO_ONE_NAT
+    tags:
+      items:
+        - "environment-algo"
+  register: gcp_compute_instance
 
 - set_fact:
-    cloud_instance_ip: "{{ google_vm.instance_data[0].public_ip }}"
+    cloud_instance_ip: "{{ gcp_compute_instance.networkInterfaces[0].accessConfigs[0].natIP }}"
+    ansible_ssh_user: algo
+    ansible_ssh_port: "{{ ssh_port }}"
+    cloudinit: true

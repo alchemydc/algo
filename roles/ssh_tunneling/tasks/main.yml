@@ -1,12 +1,8 @@
 ---
-
-- set_fact:
-    IP_subject_alt_name: "{{ IP_subject_alt_name }}"
-
 - name: Ensure that the sshd_config file has desired options
   blockinfile:
     dest: /etc/ssh/sshd_config
-    marker: '# ANSIBLE_MANAGED_ssh_tunneling_role'
+    marker: '# {mark} ANSIBLE MANAGED BLOCK ssh_tunneling_role'
     block: |
       Match Group algo
           AllowTcpForwarding local
@@ -18,52 +14,104 @@
     - restart ssh
 
 - name: Ensure that the algo group exist
-  group: name=algo state=present
+  group:
+    name: algo
+    state: present
+    gid: 15000
 
 - name: Ensure that the jail directory exist
-  file: path=/var/jail/ state=directory mode=0755  owner=root group=root
-
-- name: Ensure that the SSH users exist
-  user:
-    name: "{{ item }}"
-    groups: algo
-    home: '/var/jail/{{ item }}'
-    createhome: yes
-    generate_ssh_key: yes
-    shell: /bin/false
-    ssh_key_type: rsa
-    ssh_key_bits: 2048
-    ssh_key_comment: '{{ item }}@{{ IP_subject_alt_name }}'
-    ssh_key_passphrase: "{{ easyrsa_p12_export_password }}"
-    state: present
-    append: yes
-  with_items: "{{ users }}"
-
-- name: The authorized keys file created
   file:
-    src: '/var/jail/{{ item }}/.ssh/id_rsa.pub'
-    dest: '/var/jail/{{ item }}/.ssh/authorized_keys'
-    owner: "{{ item }}"
-    group: "{{ item }}"
-    state: link
-  with_items: "{{ users }}"
+    path: /var/jail/
+    state: directory
+    mode: 0755
+    owner: root
+    group: "{{ root_group|default('root') }}"
 
-- name: Generate SSH fingerprints
-  shell: >
-    ssh-keyscan {{ IP_subject_alt_name }} 2>/dev/null
-  register: ssh_fingerprints
+- block:
+  - name: Ensure that the SSH users exist
+    user:
+      name: "{{ item }}"
+      group: algo
+      home: '/var/jail/{{ item }}'
+      createhome: yes
+      generate_ssh_key: false
+      shell: /bin/false
+      state: present
+      append: yes
+    with_items: "{{ users }}"
 
-- name: The known_hosts file created
-  template: src=known_hosts.j2 dest=/root/.ssh/{{ IP_subject_alt_name }}_known_hosts
+  - block:
+    - name: Clean up the ssh-tunnel directory
+      file:
+        dest: "{{ ssh_tunnels_config_path }}"
+        state: absent
+      when: keys_clean_all|bool
 
-- name: Fetch users SSH private keys
-  fetch: src='/var/jail/{{ item }}/.ssh/id_rsa' dest=configs/{{ IP_subject_alt_name }}/{{ IP_subject_alt_name }}_{{ item }}.ssh.pem flat=yes
-  with_items: "{{ users }}"
+    - name: Ensure the config directories exist
+      file:
+        dest: "{{ ssh_tunnels_config_path }}"
+        state: directory
+        recurse: yes
+        mode: '0700'
 
-- name: Change mode for SSH private keys
-  local_action: file path=configs/{{ IP_subject_alt_name }}/{{ IP_subject_alt_name }}_{{ item }}.ssh.pem mode=0600
-  with_items: "{{ users }}"
-  become: false
+    - name: Check if the private keys exist
+      stat:
+        path: "{{ ssh_tunnels_config_path }}/{{ item }}.pem"
+      register: privatekey
+      with_items: "{{ users }}"
 
-- name: Fetch the known_hosts file
-  fetch: src='/root/.ssh/{{ IP_subject_alt_name }}_known_hosts' dest=configs/{{ IP_subject_alt_name }}/{{ IP_subject_alt_name }}_known_hosts flat=yes
+    - name: Build ssh private keys
+      openssl_privatekey:
+        path: "{{ ssh_tunnels_config_path }}/{{ item.item }}.pem"
+        passphrase: "{{ p12_export_password }}"
+        cipher: aes256
+        force: false
+      no_log: true
+      when: not item.stat.exists
+      with_items: "{{ privatekey.results }}"
+      register: openssl_privatekey
+
+    - name: Build ssh public keys
+      openssl_publickey:
+        path: "{{ ssh_tunnels_config_path }}/{{ item.item.item }}.pub"
+        privatekey_path: "{{ ssh_tunnels_config_path }}/{{ item.item.item }}.pem"
+        privatekey_passphrase: "{{ p12_export_password }}"
+        format: OpenSSH
+        force: true
+      no_log: true
+      when: item.changed
+      with_items: "{{ openssl_privatekey.results }}"
+
+    - name: Build the client ssh config
+      template:
+        src: ssh_config.j2
+        dest: "{{ ssh_tunnels_config_path }}/{{ item }}.ssh_config"
+        mode: 0700
+      with_items: "{{ users }}"
+    delegate_to: localhost
+    become: false
+
+  - name: The authorized keys file created
+    authorized_key:
+      user: "{{ item }}"
+      key: "{{ lookup('file', ssh_tunnels_config_path + '/' + item + '.pub') }}"
+      state: present
+      manage_dir: true
+      exclusive: true
+    with_items: "{{ users }}"
+
+  - name: Get active users
+    getent:
+      database: group
+      key: algo
+      split: ':'
+
+  - name: Delete non-existing users
+    user:
+      name: "{{ item }}"
+      state: absent
+      remove: yes
+      force: yes
+    when: item not in users
+    with_items: "{{ getent_group['algo'][2].split(',') }}"
+  tags: update-users

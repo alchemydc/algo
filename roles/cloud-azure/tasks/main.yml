@@ -1,79 +1,50 @@
 ---
+- name: Build python virtual environment
+  import_tasks: venv.yml
+
+- name: Include prompts
+  import_tasks: prompts.yml
 
 - set_fact:
-    resource_group: "Algo_{{ region }}"
+    algo_region: >-
+      {% if region is defined %}{{ region }}
+      {%- elif _algo_region.user_input %}{{ azure_regions[_algo_region.user_input | int -1 ]['name'] }}
+      {%- else %}{{ azure_regions[default_region | int - 1]['name'] }}{% endif %}
 
-- name: Create a resource group
-  azure_rm_resourcegroup:
-    secret: "{{ azure_secret | default(lookup('env','AZURE_SECRET')) }}"
-    tenant: "{{ azure_tenant | default(lookup('env','AZURE_TENANT')) }}"
-    client_id: "{{ azure_client_id | default(lookup('env','AZURE_CLIENT_ID')) }}"
-    subscription_id: "{{ azure_subscription_id | default(lookup('env','AZURE_SUBSCRIPTION_ID')) }}"
-    name: "{{ resource_group }}"
-    location: "{{ region }}"
-    tags:
-        service: algo
-
-- name: Create a virtual network
-  azure_rm_virtualnetwork:
-    secret: "{{ azure_secret | default(lookup('env','AZURE_SECRET')) }}"
-    tenant: "{{ azure_tenant | default(lookup('env','AZURE_TENANT')) }}"
-    client_id: "{{ azure_client_id | default(lookup('env','AZURE_CLIENT_ID')) }}"
-    subscription_id: "{{ azure_subscription_id | default(lookup('env','AZURE_SUBSCRIPTION_ID')) }}"
-    resource_group: "{{ resource_group }}"
-    name: algo_net
-    address_prefixes: "10.10.0.0/16"
-    tags:
-        service: algo
-
-- name: Create a subnet
-  azure_rm_subnet:
-    secret: "{{ azure_secret | default(lookup('env','AZURE_SECRET')) }}"
-    tenant: "{{ azure_tenant | default(lookup('env','AZURE_TENANT')) }}"
-    client_id: "{{ azure_client_id | default(lookup('env','AZURE_CLIENT_ID')) }}"
-    subscription_id: "{{ azure_subscription_id | default(lookup('env','AZURE_SUBSCRIPTION_ID')) }}"
-    resource_group: "{{ resource_group }}"
-    name: algo_subnet
-    address_prefix: "10.10.0.0/24"
-    virtual_network: algo_net
-    tags:
-        service: algo
-
-- name: Create an instance
-  azure_rm_virtualmachine:
-    secret: "{{ azure_secret | default(lookup('env','AZURE_SECRET')) }}"
-    tenant: "{{ azure_tenant | default(lookup('env','AZURE_TENANT')) }}"
-    client_id: "{{ azure_client_id | default(lookup('env','AZURE_CLIENT_ID')) }}"
-    subscription_id: "{{ azure_subscription_id | default(lookup('env','AZURE_SUBSCRIPTION_ID')) }}"
-    resource_group: "{{ resource_group }}"
-    admin_username: ubuntu
-    virtual_network: algo_net
-    name: "{{ azure_server_name }}"
-    ssh_password_enabled: false
-    vm_size: Standard_D1
-    tags:
-      service: algo
-    ssh_public_keys:
-      - { path: "/home/ubuntu/.ssh/authorized_keys", key_data: "{{ lookup('file', '{{ SSH_keys.public }}') }}" }
-    image:
-      offer: UbuntuServer
-      publisher: Canonical
-      sku: '16.04-LTS'
-      version: latest
-  register: azure_rm_virtualmachine
+- name: Create AlgoVPN Server
+  azure_rm_deployment:
+    state: present
+    deployment_name: "{{ algo_server_name }}"
+    template: "{{ lookup('file', role_path + '/files/deployment.json') }}"
+    secret: "{{ secret }}"
+    tenant: "{{ tenant }}"
+    client_id: "{{ client_id }}"
+    subscription_id: "{{ subscription_id }}"
+    resource_group_name: "{{ algo_server_name }}"
+    location: "{{ algo_region }}"
+    parameters:
+      sshKeyData:
+        value: "{{ lookup('file', '{{ SSH_keys.public }}') }}"
+      WireGuardPort:
+        value: "{{ wireguard_port }}"
+      vmSize:
+        value: "{{ cloud_providers.azure.size }}"
+      imageReferencePublisher:
+        value: "{{ cloud_providers.azure.image.publisher }}"
+      imageReferenceOffer:
+        value: "{{ cloud_providers.azure.image.offer }}"
+      imageReferenceSku:
+        value: "{{ cloud_providers.azure.image.sku }}"
+      imageReferenceVersion:
+        value: "{{ cloud_providers.azure.image.version }}"
+      SshPort:
+        value: "{{ ssh_port }}"
+      UserData:
+        value: "{{ lookup('template', 'files/cloud-init/base.yml') | b64encode }}"
+  register: azure_rm_deployment
 
 - set_fact:
-    ip_address: "{{ azure_rm_virtualmachine.ansible_facts.azure_vm.properties.networkProfile.networkInterfaces[0].properties.ipConfigurations[0].properties.publicIPAddress.properties.ipAddress }}"
-
-- name: Add the instance to an inventory group
-  add_host:
-    name: "{{ ip_address }}"
-    groups: vpn-host
-    ansible_ssh_user: ubuntu
-    ansible_python_interpreter: "/usr/bin/python2.7"
-    ansible_ssh_private_key_file: "{{ SSH_keys.private }}"
-    cloud_provider: azure
-    ipv6_support: no
-
-- set_fact:
-    cloud_instance_ip: "{{ ip_address }}"
+    cloud_instance_ip: "{{ azure_rm_deployment.deployment.outputs.publicIPAddresses.value }}"
+    ansible_ssh_user: algo
+    ansible_ssh_port: "{{ ssh_port }}"
+    cloudinit: true

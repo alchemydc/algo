@@ -1,117 +1,29 @@
-- name: Locate official Ubuntu 16.04 AMI for region
-  ec2_ami_find:
-    aws_access_key: "{{ aws_access_key | default(lookup('env','AWS_ACCESS_KEY_ID'))}}"
-    aws_secret_key: "{{ aws_secret_key | default(lookup('env','AWS_SECRET_ACCESS_KEY'))}}"
-    name: "ubuntu/images/hvm-ssd/ubuntu-xenial-16.04-amd64-server-*"
-    owner:  099720109477
-    sort: creationDate
-    sort_order: descending
-    sort_end: 1
-    region: "{{ region }}"
+---
+- name: Build python virtual environment
+  import_tasks: venv.yml
+
+- name: Include prompts
+  import_tasks: prompts.yml
+
+- name: Locate official AMI for region
+  ec2_ami_facts:
+    aws_access_key: "{{ access_key }}"
+    aws_secret_key: "{{ secret_key }}"
+    owners: "{{ cloud_providers.ec2.image.owner }}"
+    region: "{{ algo_region }}"
+    filters:
+      name: "ubuntu/images/hvm-ssd/{{ cloud_providers.ec2.image.name }}-amd64-server-*"
   register: ami_search
 
-- set_fact:
-    ami_image: "{{ ami_search.results[0].ami_id }}"
+- name: Set the ami id as a fact
+  set_fact:
+    ami_image: "{{ (ami_search.images | sort(attribute='creation_date') | last)['image_id'] }}"
 
-- include: encrypt_image.yml
-  tags: [encrypted]
-
-- name: Add ssh public key
-  ec2_key:
-    aws_access_key: "{{ aws_access_key | default(lookup('env','AWS_ACCESS_KEY_ID'))}}"
-    aws_secret_key: "{{ aws_secret_key | default(lookup('env','AWS_SECRET_ACCESS_KEY'))}}"
-    name: VPNKEY
-    region: "{{ region }}"
-    key_material: "{{ item }}"
-  with_file: "{{ SSH_keys.public }}"
-  register: keypair
-
-- name: Configure EC2 virtual private clouds
-  ec2_vpc:
-    aws_access_key: "{{ aws_access_key | default(lookup('env','AWS_ACCESS_KEY_ID'))}}"
-    aws_secret_key: "{{ aws_secret_key | default(lookup('env','AWS_SECRET_ACCESS_KEY'))}}"
-    state: present
-    resource_tags: { "Environment":"Algo" }
-    region: "{{ region }}"
-    cidr_block: "{{ ec2_vpc_nets.cidr_block }}"
-    internet_gateway: yes
-    subnets:
-      - cidr: "{{ ec2_vpc_nets.subnet_cidr }}"
-        resource_tags: { "Environment":"Algo" }
-  register: vpc
-
-- name: Set up Public Subnets Route Table
-  ec2_vpc_route_table:
-    aws_access_key: "{{ aws_access_key | default(lookup('env','AWS_ACCESS_KEY_ID'))}}"
-    aws_secret_key: "{{ aws_secret_key | default(lookup('env','AWS_SECRET_ACCESS_KEY'))}}"
-    vpc_id: "{{ vpc.vpc_id }}"
-    region: "{{ region }}"
-    state: present
-    tags:
-      Environment: Algo
-    subnets:
-      - "{{ ec2_vpc_nets.subnet_cidr }}"
-    routes:
-      - dest: 0.0.0.0/0
-        gateway_id: "{{ vpc.igw_id }}"
-  register: public_rt
-
-- name: Configure EC2 security group
-  ec2_group:
-    aws_access_key: "{{ aws_access_key | default(lookup('env','AWS_ACCESS_KEY_ID'))}}"
-    aws_secret_key: "{{ aws_secret_key | default(lookup('env','AWS_SECRET_ACCESS_KEY'))}}"
-    name: vpn-secgroup
-    description: Security group for VPN servers
-    region: "{{ region }}"
-    vpc_id: "{{ vpc.vpc_id }}"
-    rules:
-      - proto: udp
-        from_port: 4500
-        to_port: 4500
-        cidr_ip: 0.0.0.0/0
-      - proto: udp
-        from_port: 500
-        to_port: 500
-        cidr_ip: 0.0.0.0/0
-      - proto: tcp
-        from_port: 22
-        to_port: 22
-        cidr_ip: 0.0.0.0/0
-    rules_egress:
-      - proto: all
-        from_port: 0-65535
-        to_port: 0-65535
-        cidr_ip: 0.0.0.0/0
-
-- name: Launch instance
-  ec2:
-    aws_access_key: "{{ aws_access_key | default(lookup('env','AWS_ACCESS_KEY_ID'))}}"
-    aws_secret_key: "{{ aws_secret_key | default(lookup('env','AWS_SECRET_ACCESS_KEY'))}}"
-    keypair: "VPNKEY"
-    vpc_subnet_id: "{{ vpc.subnets[0].id }}"
-    group: vpn-secgroup
-    instance_type: t2.micro
-    image: "{{ ami_image }}"
-    wait: true
-    region: "{{ region }}"
-    instance_tags:
-      name: "{{ aws_server_name }}"
-    exact_count: 1
-    count_tag:
-      name: "{{ aws_server_name }}"
-    assign_public_ip: yes
-  register: ec2
-
-- name: Add new instance to host group
-  add_host:
-    hostname: "{{ item.public_ip }}"
-    groupname: vpn-host
-    ansible_ssh_user: ubuntu
-    ansible_python_interpreter: "/usr/bin/python2.7"
-    ansible_ssh_private_key_file: "{{ SSH_keys.private }}"
-    cloud_provider: ec2
-    ipv6_support: no
-  with_items: "{{ ec2.tagged_instances }}"
+- name: Deploy the stack
+  import_tasks: cloudformation.yml
 
 - set_fact:
-    cloud_instance_ip: "{{ ec2.tagged_instances[0].public_ip }}"
+    cloud_instance_ip: "{{ stack.stack_outputs.ElasticIP }}"
+    ansible_ssh_user: algo
+    ansible_ssh_port: "{{ ssh_port }}"
+    cloudinit: true
