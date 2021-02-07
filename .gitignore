@@ -7,3 +7,9 @@ inventory_users
 .DS_Store
 venvs/*
 !venvs/.gitinit
+# venv artifacts (osx)
+bin/
+lib/
+pyvenv.cfg
+#vscode
+*.code-workspace
