@@ -1,6 +1,5 @@
 # Algo VPN
 
-[![Join the chat at https://gitter.im/trailofbits/algo](https://badges.gitter.im/trailofbits/algo.svg)](https://gitter.im/trailofbits/algo?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
 [![Twitter](https://img.shields.io/twitter/url/https/twitter.com/fold_left.svg?style=social&label=Follow%20%40AlgoVPN)](https://twitter.com/AlgoVPN)
 [![](https://github.com/trailofbits/algo/workflows/Main/badge.svg?branch=master)](https://github.com/trailofbits/algo/actions)
 
@@ -55,6 +54,7 @@ The easiest way to get an Algo server running is to run it on your local system 
             ```bash
             sudo apt install -y --no-install-recommends python3-virtualenv
             ```
+            On a Raspberry Pi running Ubuntu also install `libffi-dev` and `libssl-dev`.
         * Fedora:
             ```bash
             sudo dnf install -y python3-virtualenv
@@ -222,7 +222,7 @@ After this process completes, the Algo VPN server will contain only the users li
 * Deploy to an [unsupported cloud provider](docs/deploy-to-unsupported-cloud.md)
 * Deploy to your own [FreeBSD](docs/deploy-to-freebsd.md) server
 
-If you've read all the documentation and have further questions, [join the chat on Gitter](https://gitter.im/trailofbits/algo).
+If you've read all the documentation and have further questions, [create a new discussion](https://github.com/trailofbits/algo/discussions).
 
 ## Endorsements
 
